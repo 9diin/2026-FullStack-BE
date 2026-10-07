@@ -1,7 +1,8 @@
 # [핵심] 모든 도메인 라우터를 모아주는 중앙 라우터
 
-from backend.domain.users.routers.user import router as users_router
 from fastapi import APIRouter
+
+from backend.domain.users.routers.user import router as users_router
 
 api_router = APIRouter(prefix="/api/v1")
 

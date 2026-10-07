@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 # uv add sqlalchemy 명령어로 설치된 SQLAlchemy를 사용하기 위해 필요한 모듈을 임포트합니다.
 from sqlalchemy import Boolean, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
-from src.backend.database import Base
+from backend.core.database import Base
 
 
 # Users 테이블 ORM 모델 정의
