@@ -3,14 +3,19 @@ from datetime import UTC, datetime
 # uv add sqlalchemy 명령어로 설치된 SQLAlchemy를 사용하기 위해 필요한 모듈을 임포트합니다.
 from sqlalchemy import Boolean, DateTime
 from sqlalchemy.orm import Mapped, mapped_column
+
 from backend.core.database import Base
+
+# [요구사항]
+# - user_id: uuid로 만들기
+# - 테이블 조인 시, 활용 방안 강구
 
 
 # Users 테이블 ORM 모델 정의
 # 데이터베이스의 'users' 테이블과 매핑되는 SQLAlchemy ORM 모델을 정의합니다.
 # Base: SQLAlchemy의 ORM 모델을 정의하기 위한 기본 클래스입니다. 이 클래스를 상속받아 User 모델을 정의합니다.
 class User(Base):
-    __tablename__ = "users" # 데이터베이스 테이블 이름
+    __tablename__ = "users"  # 데이터베이스 테이블 이름
 
     # SQLAlchemy ORM 모델의 컬럼 정의
     # * Mapped[...]: "이 변수는 데이터베이스 테이블의 컬럼과 매핑될 파이썬 속성입니다"라고 SQLAlchemy에게 알려주는 타입 힌트입니다.
@@ -35,7 +40,9 @@ class User(Base):
     # Boolean: 데이터베이스에 TRUE 또는 FALSE 값으로 저장되도록 지정합니다.
     terms_agreed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     privacy_agreed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    marketing_agreed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    marketing_agreed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
     # 5. 생성 및 수정 타임스탬프 (타임존을 포함한 표준 UTC 적용)
     # * 일반 값 전달 (서버가 켜질 때의 고정된 시간 '하나'만 계속 사용됨)
