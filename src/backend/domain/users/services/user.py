@@ -117,7 +117,11 @@ class UserService:
         self.db.commit()
         self.db.refresh(new_user)  # DB에 저장되면서 자동 생성된 ID 등을 객체에 갱신
 
-        return {"message": "회원가입이 완료되었습니다.", "email": new_user.email}
+        return {
+            "message": "회원가입이 완료되었습니다.",
+            "email": new_user.email,
+            "status": status.HTTP_201_CREATED,
+        }
 
     # 로그인 API를 구현할 때 Access Token(액세스 토큰)과 Refresh Token(리프레시 토큰)의 개념과 필요성을 명확히 이해는 것은 안전한 웹 서비스 개발의 핵심입니다.
 

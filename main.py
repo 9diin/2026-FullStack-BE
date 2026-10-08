@@ -1,10 +1,13 @@
 from fastapi import FastAPI  # noqa: I001
 from fastapi.middleware.cors import CORSMiddleware
+
+
 from api import api_router
 from backend.core.database import Base, engine
 
 # SQLAlchemy가 User 모델을 인식하도록 임포트해야 합니다.
 from backend.domain.users.models.user import User  # noqa: F401
+
 
 # FastAPI 애플리케이션 초기화
 app = FastAPI(
@@ -26,8 +29,8 @@ app.add_middleware(
 # 도메인 라우터 등록
 app.include_router(api_router)
 
-# "자, 우리가 준비한 설계도(Base)를 가지고, 전화선(engine)을 통해 Supabase로 달려가서
-#  아직 테이블이 없으면 당장 지어 올려라!"라고 명령하는 코드입니다.
+# "자, 우리가 준비한 설계도(Base)를 가지고, Engine을 통해 Supabase로 달려가서
+# 아직 테이블이 없으면 당장 지어 올려라!"라고 명령하는 코드입니다.
 Base.metadata.create_all(bind=engine)
 
 
