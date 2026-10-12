@@ -188,4 +188,11 @@ class UserService:
             "message": "로그인을 성공하였습니다.",
             "access_token": access_token,
             "token_type": "bearer",
+            "status": status.HTTP_201_CREATED,
+            "user": {
+                "id": 1,
+                "email": "test@test.com",
+                "name": "9diin",
+                "avatar": "https://github.com/daffy3.png",
+            },
         }
