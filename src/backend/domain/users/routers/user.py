@@ -21,8 +21,6 @@ def get_user_service(db: Session = Depends(get_db)):
 
 @router.post("/sign-up", status_code=status.HTTP_201_CREATED)
 def signUp(body: UserCreate, user_service: UserService = Depends(get_user_service)):
-
-    print("body", body)
     # 회원가입 API
     # - 클라이언트가 보낸 데이터는 UserCreate DTO를 통해 자동으로 검증됩니다.
     # - UserService의 sign_up 메서드를 호출하여 회원가입 로직을 처리합니다.

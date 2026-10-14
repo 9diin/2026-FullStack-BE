@@ -16,6 +16,9 @@ class UserCreate(BaseModel):
     password: str = Field(
         ..., min_length=8, description="사용자 비밀번호", example="securepassword123"
     )
+    email_verification_code: str = Field(
+        ..., pattern=r"^\d{6}$", description="이메일 인증번호"
+    )
     nickname: str | None = Field(default=None, max_length=50)
     activity_type: ActivityType | None = None
 

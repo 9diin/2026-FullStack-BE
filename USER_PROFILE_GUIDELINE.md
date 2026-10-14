@@ -51,3 +51,12 @@
 2. `REFRESH_COOKIE_SECURE=true`를 운영 환경에서 유지하고 실제 프런트엔드 주소를 `CORS_ORIGINS`에 설정합니다.
 3. 공개 가능한 필드와 본인 전용 필드를 구분합니다.
 4. 본인 조회·수정, 미인증 요청, 잘못된 입력, 존재하지 않는 프로필, 타 사용자 데이터 접근 차단을 테스트합니다.
+
+## 6. 회원가입 이메일 인증 흐름
+
+1. 프런트엔드는 `POST /api/v1/auth/email-verification/send`에 `{ "email": "user@example.com" }`을 전달합니다. 서버는 6자리 코드를 생성하고 SMTP를 통해 HTML 이메일(일반 텍스트 대체 내용 포함)을 발송합니다.
+2. 사용자는 이메일의 코드를 입력하고 `POST /api/v1/auth/email-verification/verify`에 이메일과 코드를 전달합니다. 유효하면 `{ "verified": true }`를 받습니다.
+3. `POST /api/v1/auth/sign-up`에도 같은 `email`과 `email_verification_code`를 보내야 합니다. 서버는 인증 완료 여부·코드 일치·만료 여부를 다시 확인하고, 회원 생성과 인증 정보 소비를 한 트랜잭션으로 처리합니다.
+4. 코드는 DB에 원문 대신 서버 비밀키로 만든 HMAC 해시만 저장하며, 10분 만료·60초 재발송 대기·최대 5회 입력 제한을 적용합니다. 설정값은 `EMAIL_VERIFICATION_*` 환경 변수로 변경할 수 있습니다.
+5. 이메일 발송은 Python 내장 `smtplib`를 사용하므로 별도 메일 패키지를 설치할 필요가 없습니다. Naver SMTP 예시는 저장소의 `.env.local.example`에 있으며, 이를 `.env.local`로 복사한 후 `SMTP_PASSWORD`에 Naver SMTP용 비밀번호를 설정합니다. `.env.local`은 Git에서 제외됩니다. 개인 계정 비밀번호 대신 Naver에서 허용하는 앱 비밀번호/SMTP 비밀번호를 사용하고 저장소에 기록하지 않습니다. 배포에서는 플랫폼의 secret 환경 변수로 주입합니다. SMTP 설정이 없거나 발송이 실패하면 API는 실패를 반환하며, 인증번호를 발송한 것처럼 성공 응답하지 않습니다.
+6. 이메일별 재발송 대기와 코드 입력 횟수 제한은 적용되어 있습니다. 실제 서비스에서는 여러 주소로 대량 발송하는 악용을 막기 위해 API Gateway나 Redis 기반 IP별 rate limit도 추가합니다.

@@ -7,6 +7,9 @@ from backend.core.config import settings
 from backend.core.database import Base, engine
 
 # SQLAlchemy가 User 모델을 인식하도록 임포트해야 합니다.
+from backend.domain.users.models.email_verification import (  # noqa: F401
+    EmailVerification,
+)
 from backend.domain.users.models.user import User  # noqa: F401
 from backend.domain.users.models.user_profile import UserProfile  # noqa: F401
 

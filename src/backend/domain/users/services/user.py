@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -10,6 +11,9 @@ from backend.core.config import settings
 from backend.domain.users.models.user import User
 from backend.domain.users.models.user_profile import UserProfile
 from backend.domain.users.schemas.user import UserCreate, UserLogin
+from backend.domain.users.services.email_verification import (
+    EmailVerificationService,
+)
 
 SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = "HS256"
@@ -110,7 +114,11 @@ class UserService:
 
         # 1. 이미 가입된 이메일인지 검증
         # Supabase(DB)에세 이미 가입된 이메일인지 조회
-        existing_user = self.db.query(User).filter(User.email == body.email).first()
+        existing_user = (
+            self.db.query(User)
+            .filter(func.lower(User.email) == str(body.email).lower())
+            .first()
+        )
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -124,12 +132,19 @@ class UserService:
                 detail="필수 약관 및 개인정보처리방침에 동의해야 합니다.",
             )
 
+        # A valid, unexpired confirmation is required and consumed in the same
+        # transaction as account creation so one verification cannot be reused.
+        EmailVerificationService(self.db).consume_verified_code(
+            str(body.email),
+            body.email_verification_code,
+        )
+
         # 3. 비밀번호 해싱
         hashed_password = self._hash_password(body.password)
 
         # 4. 데이터베이스(Supabase)에 저장할 User 모델 객체 생성
         new_user = User(
-            email=body.email,
+            email=str(body.email).lower(),
             password=hashed_password,
             profile=UserProfile(
                 nickname=body.nickname,
