@@ -1,10 +1,14 @@
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 # uv add sqlalchemy 명령어로 설치된 SQLAlchemy를 사용하기 위해 필요한 모듈을 임포트합니다.
 from sqlalchemy import Boolean, DateTime
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.core.database import Base
+
+if TYPE_CHECKING:
+    from backend.domain.users.models.user_profile import UserProfile
 
 # [요구사항]
 # - user_id: uuid로 만들기
@@ -29,6 +33,14 @@ class User(Base):
 
     # 1. 회원 고유 ID (Primary Key)
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+
+    # '유저' 입장에서 '유저 프로필'과 1:1 관계 설정 (테이블 조인)
+    profile: Mapped["UserProfile | None"] = relationship(
+        back_populates="user",  # UserProfile.user와 양방향 관계를 연결
+        cascade="all, delete-orphan",  # 사용자 삭제 또는 관계 해제 시 프로필도 삭제
+        passive_deletes=True,  # 로드되지 않은 프로필 삭제는 DB의 ON DELETE CASCADE에 위임
+        uselist=False,  # 프로필을 목록이 아닌 단일 객체로 다루어 1:1 관계를 표현
+    )
 
     # 2. 사용자 이메일 주소 (Unique)
     email: Mapped[str] = mapped_column(unique=True, nullable=False)
