@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 from api import api_router
+from backend.core.config import settings
 from backend.core.database import Base, engine
 
 # SQLAlchemy가 User 모델을 인식하도록 임포트해야 합니다.
@@ -21,8 +22,9 @@ app = FastAPI(
 # [권장] 프런트엔드 연동을 위한 CORS 미들웨어 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,  # 허용할 도메인만 명시 (예: ["http://localhost:3000"])
+    # 쿠키 인증을 쓰면 "*" 대신 프런트엔드 주소를 명시해야 브라우저가 쿠키를 허용합니다.
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

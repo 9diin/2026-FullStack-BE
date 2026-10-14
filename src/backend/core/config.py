@@ -13,6 +13,11 @@ dotenv_filename = ROOT_DIR / "env" / "development.env"
 class Settings(BaseSettings):
     DATABASE_URL: str
     SECRET_KEY: str = "default-key"
+    REFRESH_COOKIE_SECURE: bool = True
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+    ]
 
     model_config = SettingsConfigDict(
         env_file=dotenv_filename,

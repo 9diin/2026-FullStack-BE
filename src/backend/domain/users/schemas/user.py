@@ -1,7 +1,9 @@
 # 1. 회원가입 요청 데이터 검증 스키마
 # 클라이언트가 회원가입 요청 시 보낸 데이터를 검증하는 Pydantic 스키마입니다.
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from backend.domain.users.schemas.user_profile import ActivityType
 
 
 # BaseModel을 상속받는 순간, 이 클래스는 데이터 검증 기능을 갖추게 됩니다.
@@ -14,6 +16,18 @@ class UserCreate(BaseModel):
     password: str = Field(
         ..., min_length=8, description="사용자 비밀번호", example="securepassword123"
     )
+    nickname: str | None = Field(default=None, max_length=50)
+    activity_type: ActivityType | None = None
+
+    @field_validator("nickname")
+    @classmethod
+    def normalize_nickname(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("닉네임은 공백일 수 없습니다.")
+        return normalized
 
     # 약관 동의 필드
     # ... 의 의미: 필수 입력 필드임을 나타냅니다.

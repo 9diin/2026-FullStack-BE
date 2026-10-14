@@ -2,16 +2,20 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 from fastapi import HTTPException, status
-from jose import jwt
+from jose import JWTError, jwt
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from backend.core.config import settings
 from backend.domain.users.models.user import User
+from backend.domain.users.models.user_profile import UserProfile
 from backend.domain.users.schemas.user import UserCreate, UserLogin
 
-# 설정값 (실제로는 환경변수나 설정 파일에서 관리합니다)
-SECRET_KEY = "your-super-secret-key"
+SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = "HS256"
 BCRYPT_MAX_PASSWORD_BYTES = 72
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 
 class UserService:
@@ -67,7 +71,9 @@ class UserService:
 
     # 토큰 생성 함수
     # 설치 명령어: uv add python-jose
-    def _create_token(self, data, expires_delta: timedelta) -> str:
+    def _create_token(
+        self, data: dict[str, str], expires_delta: timedelta, token_type: str
+    ) -> str:
         # 데이터의 timedelta 만료 시간을 받아 안전하게 JWT를 생성합니다.
         to_encode = data.copy()
 
@@ -75,10 +81,28 @@ class UserService:
         expire = datetime.now(timezone.utc) + expires_delta
 
         # JWT 표준 클레임인 'exp'(Expiration)에 만료 시간 반영
-        to_encode.update({"exp": expire})
+        to_encode.update({"exp": expire, "type": token_type})
 
         # JWT 인코딩 후 문자열로 반환
         return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+    def _decode_token(self, token: str, expected_type: str) -> dict[str, object]:
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        except JWTError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="인증 정보가 유효하지 않거나 만료되었습니다.",
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+
+        if payload.get("type") != expected_type:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="요청에 맞지 않는 토큰입니다.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return payload
 
     def sign_up(self, body: UserCreate):
         # 회원가입 로직 구현
@@ -107,6 +131,12 @@ class UserService:
         new_user = User(
             email=body.email,
             password=hashed_password,
+            profile=UserProfile(
+                nickname=body.nickname,
+                activity_type=(
+                    body.activity_type.value if body.activity_type is not None else None
+                ),
+            ),
             terms_agreed=body.terms_agreed,
             privacy_agreed=body.privacy_agreed,
             marketing_agreed=body.marketing_agreed,
@@ -114,7 +144,11 @@ class UserService:
 
         # 5. DB에 추가하고 변경사항 커밋(반영)
         self.db.add(new_user)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except SQLAlchemyError:
+            self.db.rollback()
+            raise
         self.db.refresh(new_user)  # DB에 저장되면서 자동 생성된 ID 등을 객체에 갱신
 
         return {
@@ -122,6 +156,50 @@ class UserService:
             "email": new_user.email,
             "status": status.HTTP_201_CREATED,
         }
+
+    def get_current_user(self, token: str) -> User:
+        payload = self._decode_token(token, "access")
+
+        email = payload.get("sub")
+        if not isinstance(email, str) or not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="인증 정보가 유효하지 않습니다.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        user = self.db.query(User).filter(User.email == email).first()
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="인증 정보가 유효하지 않습니다.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return user
+
+    def refresh_access_token(self, refresh_token: str) -> str:
+        payload = self._decode_token(refresh_token, "refresh")
+        email = payload.get("sub")
+        if not isinstance(email, str) or not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="인증 정보가 유효하지 않습니다.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        user = self.db.query(User).filter(User.email == email).first()
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="인증 정보가 유효하지 않습니다.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        return self._create_token(
+            {"sub": user.email},
+            timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+            token_type="access",
+        )
 
     # 로그인 API를 구현할 때 Access Token(액세스 토큰)과 Refresh Token(리프레시 토큰)의 개념과 필요성을 명확히 이해는 것은 안전한 웹 서비스 개발의 핵심입니다.
 
@@ -153,7 +231,7 @@ class UserService:
     # 대신, 숨겨두었던 Refresh Token을 서버에 조용히 보내서 "나 아직 로그인 상태 유지 중이니까 Access Token 하나만 새로 발급해 줘!" 하고 요청합니다.
     # 서버는 Refresh Token이 유효한지 확인한 뒤, 새로운 Access Token을 뚝딱 만들어 건네줍니다.
     # 결과: 사용자는 며칠 동안 로그아웃되는 불편함 없이 편리하게 서비스를 이용하면서도, 보안의 핵심인 Access Token의 수명은 짧게 유지할 수 있는 마법 같은 타협점이 완성됩니다.
-    def sign_in(self, body: UserLogin):
+    def sign_in(self, body: UserLogin) -> tuple[dict[str, object], str]:
         # 로그인 로직 구현
         # 예: 사용자 인증 정보를 검증하고, 토큰을 발급하는 동의 작업 수행
 
@@ -176,23 +254,34 @@ class UserService:
                 detail="이메일 또는 비밀번호가 올바르지 않습니다.",
             )
 
-        # 3. Access Token 생성 (수명 짦음: 30분) -> API 요청용 입장권
-        access_token_expires = timedelta(minutes=30)
+        # Access token은 API 요청에, refresh token은 access token 재발급에 사용합니다.
         access_token = self._create_token(
-            data={"sub": user.email}, expires_delta=access_token_expires
+            data={"sub": user.email},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+            token_type="access",
+        )
+        refresh_token = self._create_token(
+            data={"sub": user.email},
+            expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+            token_type="refresh",
         )
 
-        # 5. 인증 성공 시 토큰 발급
-        # 실제 구현에서는 JWT 토큰 등을 발급하여 클라이언트에 반환하는 로직을 추가해야 합니다.
-        return {
-            "message": "로그인을 성공하였습니다.",
-            "access_token": access_token,
-            "token_type": "bearer",
-            "status": status.HTTP_201_CREATED,
-            "user": {
-                "id": 1,
-                "email": "test@test.com",
-                "name": "9diin",
-                "avatar": "https://github.com/daffy3.png",
+        profile = user.profile
+        return (
+            {
+                "message": "로그인을 성공하였습니다.",
+                "access_token": access_token,
+                "token_type": "bearer",
+                "status": status.HTTP_200_OK,
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "name": profile.nickname if profile is not None else None,
+                    "activity_type": (
+                        profile.activity_type if profile is not None else None
+                    ),
+                    "avatar": "https://github.com/kakao.png",
+                },
             },
-        }
+            refresh_token,
+        )
