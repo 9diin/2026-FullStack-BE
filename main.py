@@ -2,11 +2,13 @@ from fastapi import FastAPI  # noqa: I001
 from fastapi.middleware.cors import CORSMiddleware
 
 
+# pyrefly: ignore [missing-import]
 from api import api_router
 from backend.core.config import settings
 from backend.core.database import Base, engine
 from backend.domain.ideas.errors import register_idea_error_handlers
 from backend.domain.ideas.models.idea_generation import (  # noqa: F401
+    IdeaElaboration,
     IdeaGeneration,
     IdeaSelectionEvent,
     IdeaSuggestion,

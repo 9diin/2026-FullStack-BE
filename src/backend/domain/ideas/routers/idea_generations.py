@@ -5,6 +5,10 @@ from sqlalchemy.orm import Session
 
 from backend.core.config import settings
 from backend.core.database import get_db
+from backend.domain.ideas.llm.elaboration_generator import (
+    GeminiIdeaElaborationGenerator,
+    IdeaElaborationGenerator,
+)
 from backend.domain.ideas.llm.idea_generator import GeminiIdeaGenerator, IdeaGenerator
 from backend.domain.ideas.schemas.idea_generation import (
     APIErrorResponse,
@@ -14,7 +18,12 @@ from backend.domain.ideas.schemas.idea_generation import (
     IdeaSelectionResponse,
     SourceFileUploadResponse,
 )
+from backend.domain.ideas.schemas.idea_elaboration import (
+    ElaborationRequest,
+    ElaborationResponse,
+)
 from backend.domain.ideas.services.idea_generation import IdeaGenerationService
+from backend.domain.ideas.services.idea_elaboration import IdeaElaborationService
 from backend.domain.users.models.user import User
 from backend.domain.users.routers.dependencies import get_current_user
 
@@ -46,6 +55,20 @@ def get_idea_generation_service(
     generator: IdeaGenerator = Depends(get_idea_generator),
 ) -> IdeaGenerationService:
     return IdeaGenerationService(db, generator)
+
+
+
+
+
+def get_idea_elaboration_generator() -> IdeaElaborationGenerator:
+    return GeminiIdeaElaborationGenerator()
+
+
+def get_idea_elaboration_service(
+    db: Session = Depends(get_db),
+    generator: IdeaElaborationGenerator = Depends(get_idea_elaboration_generator),
+) -> IdeaElaborationService:
+    return IdeaElaborationService(db, generator)
 
 
 @router.post(
@@ -91,3 +114,41 @@ def select_idea(
     service: IdeaGenerationService = Depends(get_idea_generation_service),
 ) -> IdeaSelectionResponse:
     return service.select_idea(current_user, generation_id, body.selected_idea_id)
+
+
+@router.post(
+    "/idea-generations/{generation_id}/elaboration",
+    response_model=ElaborationResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        **ERROR_RESPONSES,
+        409: {"model": APIErrorResponse, "description": "이미 구체화 데이터가 존재합니다."},
+    },
+    summary="아이디어 구체화 데이터 생성",
+    description=(
+        "선택한 아이디어 제안의 문제인식·페르소나·3대 페인포인트 악순환 고리·AI 코칭 데이터를 "
+        "저장합니다. 동일 generation_id에 대해 최초 1회만 생성 가능합니다."
+    ),
+)
+def create_elaboration(
+    generation_id: UUID,
+    body: ElaborationRequest,
+    current_user: User = Depends(get_current_user),
+    service: IdeaElaborationService = Depends(get_idea_elaboration_service),
+) -> ElaborationResponse:
+    return service.create_elaboration(current_user, generation_id, body)
+
+
+@router.get(
+    "/idea-generations/{generation_id}/elaboration",
+    response_model=ElaborationResponse,
+    responses=ERROR_RESPONSES,
+    summary="아이디어 구체화 데이터 조회",
+    description="generation_id에 연결된 구체화 데이터를 반환합니다.",
+)
+def get_elaboration(
+    generation_id: UUID,
+    current_user: User = Depends(get_current_user),
+    service: IdeaElaborationService = Depends(get_idea_elaboration_service),
+) -> ElaborationResponse:
+    return service.get_elaboration(current_user, generation_id)

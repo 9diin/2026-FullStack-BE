@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "default-key"
     GEMINI_API_KEY: SecretStr | None = None
     GEMINI_BASE_URL: str | None = None
-    GEMINI_MODEL: str = "gemini-flash-latest"
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
     LLM_TIMEOUT_SECONDS: float = 60
     LLM_MAX_COMPLETION_TOKENS: int = 1600
     SOURCE_FILE_MAX_BYTES: int = 20 * 1024 * 1024

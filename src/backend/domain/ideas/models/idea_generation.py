@@ -91,3 +91,42 @@ class IdeaSelectionEvent(Base):
     selected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
+
+
+class IdeaElaboration(Base):
+    """아이디어 구체화 데이터 - 문제인식/페르소나/페인포인트/AI코칭을 저장합니다."""
+
+    __tablename__ = "idea_elaborations"
+
+    id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid4
+    )
+    generation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("idea_generations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        unique=True,  # 1 generation : 1 elaboration
+    )
+    suggestion_id: Mapped[UUID] = mapped_column(
+        ForeignKey("idea_suggestions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # 구체화 제목 (선택된 아이디어 제목)
+    title: Mapped[str] = mapped_column(String(400), nullable=False)
+    # 문제인식 상세 문장 (요약문 대비 약 2배 분량)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    # 핵심 타깃 페르소나 (JSON): {title, description, evidence_points: [str, str, str]}
+    persona: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # 3대 페인포인트 악순환 고리 (JSON): [{step, step_name, title, description, highlight_tag}, ...]
+    pain_point_cycle: Mapped[list] = mapped_column(JSON, nullable=False)
+    # AI 솔루션 종합 근거 문장
+    solution_evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    # AI 평가위원 코칭 피드백 문장
+    feedback_review: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
