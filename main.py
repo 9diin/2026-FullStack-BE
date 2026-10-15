@@ -5,6 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from api import api_router
 from backend.core.config import settings
 from backend.core.database import Base, engine
+from backend.domain.ideas.errors import register_idea_error_handlers
+from backend.domain.ideas.models.idea_generation import (  # noqa: F401
+    IdeaGeneration,
+    IdeaSelectionEvent,
+    IdeaSuggestion,
+    SourceFile,
+)
 
 # SQLAlchemy가 User 모델을 인식하도록 임포트해야 합니다.
 from backend.domain.users.models.email_verification import (  # noqa: F401
@@ -17,9 +24,10 @@ from backend.domain.users.models.user_profile import UserProfile  # noqa: F401
 # FastAPI 애플리케이션 초기화
 app = FastAPI(
     title="1인 예비창업자/초기창업자를 위한 AI 사업계획서 도출 플랫폼",
-    description="",
+    description="프롬프트 기반 아이디어 생성과 사용자 선택 데이터 기반 트렌드 분석 API",
     version="1.0.0",
 )
+register_idea_error_handlers(app)
 
 
 # [권장] 프런트엔드 연동을 위한 CORS 미들웨어 설정
