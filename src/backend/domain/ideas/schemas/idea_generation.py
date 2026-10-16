@@ -18,7 +18,8 @@ InterestCategory = Literal[
     "관광·여가",
     "기타",
 ]
-FocusItem = Annotated[str, Field(min_length=1, max_length=120)]
+FOCUS_ITEM_MAX_LENGTH = len("독창적인 음악 스타일과 개성을 살린 콘셉트 및 브랜딩 기획")
+FocusItem = Annotated[str, Field(min_length=1, max_length=FOCUS_ITEM_MAX_LENGTH)]
 IdeaDetail = Annotated[str, Field(min_length=1, max_length=500)]
 
 
@@ -90,7 +91,7 @@ class IdeaSuggestionResponse(BaseModel):
 
 class IdeaGenerationContext(BaseModel):
     source_files: list[SourceFileReference]
-    focus_items: list[FocusItem] = Field(min_length=1, max_length=8)
+    focus_items: list[FocusItem] = Field(min_length=3, max_length=3)
 
 
 class IdeaGenerationResponse(BaseModel):

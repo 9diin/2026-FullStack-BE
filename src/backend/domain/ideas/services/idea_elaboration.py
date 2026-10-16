@@ -18,6 +18,7 @@ from backend.domain.ideas.llm.elaboration_generator import (
 )
 from backend.domain.ideas.llm.idea_generator import (
     IdeaGenerationTimeout,
+    IdeaGeneratorAuthenticationError,
     IdeaGeneratorConfigurationError,
     IdeaGeneratorRateLimited,
     IdeaGeneratorUnavailable,
@@ -118,6 +119,14 @@ class IdeaElaborationService:
                 [],
                 problem_context=problem_context,
             )
+        except IdeaGeneratorAuthenticationError as exc:
+            raise IdeaAPIError(
+                503,
+                "LLM_AUTHENTICATION_ERROR",
+                "Gemini API 키 인증에 실패했습니다. Google AI Studio에서 Gemini Developer API 키를 "
+                "발급해 GEMINI_API_KEY에 설정한 뒤 백엔드 서버를 재시작해 주세요. "
+                "서비스 계정에 연결된 Google Cloud API 키는 Gemini API에서 지원되지 않습니다.",
+            ) from exc
         except IdeaGeneratorConfigurationError as exc:
             raise IdeaAPIError(
                 503,

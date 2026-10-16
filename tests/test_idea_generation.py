@@ -21,6 +21,7 @@ from backend.domain.ideas.llm.idea_generator import (
     GeminiIdeaGenerator,
     GeneratedIdeas,
     IdeaGenerationTimeout,
+    IdeaGeneratorAuthenticationError,
     IdeaGeneratorConfigurationError,
     IdeaGeneratorRateLimited,
     InvalidIdeaGeneration,
@@ -76,7 +77,7 @@ class FakeIdeaGenerator:
         self.received_prompt = prompt
         self.received_sources = source_documents
         return GeneratedIdeas(
-            focus_items=["초기 고객", "검증 방법"],
+            focus_items=["초기 고객", "검증 방법", "시장 적합성"],
             interest_categories=["교육"],
             suggestions=[
                 {"title": "개인 맞춤 학습 코치", "details": ["진단", "학습 추천"]},
@@ -101,6 +102,13 @@ class InvalidConfigurationGenerator:
         self, prompt: str, source_documents: list[SourceFile]
     ) -> GeneratedIdeas:
         raise IdeaGeneratorConfigurationError
+
+
+class AuthenticationErrorGenerator:
+    def generate(
+        self, prompt: str, source_documents: list[SourceFile]
+    ) -> GeneratedIdeas:
+        raise IdeaGeneratorAuthenticationError
 
 
 class RateLimitedIdeaGenerator:
@@ -170,7 +178,11 @@ def test_generate_persists_prompt_categories_and_three_ideas(client) -> None:
     assert body["context"]["source_files"] == []
     assert len(body["suggestions"]) == 3
     assert body["persisted"] is True
-    assert body["context"]["focus_items"] == ["초기 고객", "검증 방법"]
+    assert body["context"]["focus_items"] == [
+        "초기 고객",
+        "검증 방법",
+        "시장 적합성",
+    ]
 
     with session_factory() as db:
         generation = db.query(IdeaGeneration).one()
@@ -439,7 +451,7 @@ def test_cors_preflight_allows_frontend_loopback_ip_origin() -> None:
 
 def test_gemini_adapter_requests_and_validates_structured_output(monkeypatch) -> None:
     generated = GeneratedIdeas(
-        focus_items=["초기 사용자", "검증 지표"],
+        focus_items=["초기 사용자", "검증 지표", "시장 적합성"],
         interest_categories=["교육"],
         suggestions=[
             {"title": "맞춤형 학습도우미", "details": ["학습 진단", "개인별 추천"]},
@@ -482,6 +494,46 @@ def test_gemini_adapter_requests_and_validates_structured_output(monkeypatch) ->
     assert "$ref" not in str(captured["response_format"]["schema"])
     assert captured["store"] is False
     assert captured["closed"] is True
+
+
+def test_generated_focus_items_are_exactly_three_and_limited_to_example_length() -> (
+    None
+):
+    from pydantic import ValidationError
+
+    from backend.domain.ideas.schemas.idea_generation import FOCUS_ITEM_MAX_LENGTH
+
+    valid_focus_items = [
+        "가" * FOCUS_ITEM_MAX_LENGTH,
+        "초기 고객",
+        "시장 적합성",
+    ]
+    generated = GeneratedIdeas(
+        focus_items=valid_focus_items,
+        interest_categories=["교육"],
+        suggestions=[
+            {"title": "맞춤형 학습도우미", "details": ["학습 진단", "개인별 추천"]},
+            {"title": "학부모 학습 대시보드", "details": ["진도 공유", "상담 연결"]},
+            {"title": "교사용 자료 큐레이션", "details": ["자료 탐색", "수업 활용"]},
+        ],
+    )
+
+    assert len(generated.focus_items) == 3
+    assert max(map(len, generated.focus_items)) == FOCUS_ITEM_MAX_LENGTH
+
+    with pytest.raises(ValidationError):
+        GeneratedIdeas(
+            focus_items=[*valid_focus_items[:2], "가" * (FOCUS_ITEM_MAX_LENGTH + 1)],
+            interest_categories=["교육"],
+            suggestions=generated.suggestions,
+        )
+
+    with pytest.raises(ValidationError):
+        GeneratedIdeas(
+            focus_items=valid_focus_items[:2],
+            interest_categories=["교육"],
+            suggestions=generated.suggestions,
+        )
 
 
 def test_interactions_api_bad_request_is_mapped_to_configuration_error(
@@ -557,9 +609,32 @@ def test_gemini_rejected_configuration_is_not_reported_as_network_failure(
         GeminiIdeaGenerator().generate("교육 아이디어", [])
 
 
+def test_gemini_401_is_reported_as_authentication_error(monkeypatch) -> None:
+    class FakeInteractions:
+        def create(self, **_kwargs: object) -> None:
+            raise provider_error(401, "API key not valid")
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(
+        "backend.domain.ideas.llm.idea_generator.genai.Client", FakeClient
+    )
+
+    with pytest.raises(IdeaGeneratorAuthenticationError):
+        GeminiIdeaGenerator().generate("교육 아이디어", [])
+
+
 def test_gemini_400_retries_with_supported_fallback_model(monkeypatch) -> None:
     generated = GeneratedIdeas(
-        focus_items=["초기 사용자", "검증 지표"],
+        focus_items=["초기 사용자", "검증 지표", "시장 적합성"],
         interest_categories=["교육"],
         suggestions=[
             {"title": "맞춤형 학습도우미", "details": ["학습 진단", "개인별 추천"]},
@@ -603,7 +678,7 @@ def test_gemini_400_retries_with_supported_fallback_model(monkeypatch) -> None:
 
 def test_gemini_429_retries_with_current_fallback_model(monkeypatch) -> None:
     generated = GeneratedIdeas(
-        focus_items=["초기 사용자", "검증 지표"],
+        focus_items=["초기 사용자", "검증 지표", "시장 적합성"],
         interest_categories=["교육"],
         suggestions=[
             {"title": "맞춤형 학습도우미", "details": ["학습 진단", "개인별 추천"]},
@@ -690,3 +765,21 @@ def test_gemini_configuration_error_has_actionable_api_response(client) -> None:
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "LLM_CONFIGURATION_ERROR"
     assert "요청 형식" in response.json()["error"]["message"]
+
+
+def test_gemini_authentication_error_explains_supported_key_type(client) -> None:
+    test_client, _session_factory, _generator = client
+    test_client.app.dependency_overrides[get_idea_generator] = lambda: (
+        AuthenticationErrorGenerator()
+    )
+
+    response = test_client.post(
+        "/api/v1/idea-generations",
+        json={"prompt": "Gemini API 키 오류 안내를 확인합니다."},
+    )
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "LLM_AUTHENTICATION_ERROR"
+    assert "Google AI Studio" in error["message"]
+    assert "서비스 계정" in error["message"]

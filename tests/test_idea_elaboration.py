@@ -35,6 +35,7 @@ from backend.domain.ideas.llm.elaboration_generator import (
     GeneratedElaboration,
     GeneratedPainPointCycleStep,
     GeneratedPersona,
+    GeneratedSolutionPipelineStep,
 )
 from backend.domain.ideas.llm.idea_generator import (
     GeneratedIdeas,
@@ -52,6 +53,9 @@ from backend.domain.ideas.routers.idea_generations import (
     get_idea_elaboration_generator,
     get_idea_generator,
     router,
+)
+from backend.domain.ideas.schemas.idea_elaboration import (
+    SOLUTION_PIPELINE_TITLE_MAX_LENGTH,
 )
 from backend.domain.ideas.services.idea_generation import IdeaAPIError
 
@@ -153,7 +157,7 @@ class FakeIdeaElaborationGenerator:
                     {
                         "order": 1,
                         "category": "문제 대응",
-                        "title": f"{selected_idea_title} 문제 파악",
+                        "title": "아이디어 문제 파악",
                         "subtitle": "문제 상황 구조화",
                         "description": "사용자가 겪는 재고 파악의 어려움을 줄입니다.",
                         "technology_label": "사용자 입력 분석",
@@ -360,6 +364,25 @@ def test_gemini_response_schema_inlines_refs_and_normalizes_nullable_unions() ->
     assert metric_value == {"type": "string", "nullable": True}
 
 
+def test_solution_pipeline_title_does_not_exceed_example_length() -> None:
+    title = "프리 데뷔 믹스테이프 오픈 플랫폼 배포 및 반응 검"
+    step_fields = {
+        "order": 1,
+        "category": "유통",
+        "subtitle": "플랫폼에 배포합니다",
+        "description": "플랫폼에 배포하고 반응을 확인합니다.",
+        "technology_label": "디지털 배포",
+        "addresses_pain_point_orders": [1],
+        "metrics": [],
+    }
+
+    step = GeneratedSolutionPipelineStep(title=title, **step_fields)
+    assert len(step.title) == SOLUTION_PIPELINE_TITLE_MAX_LENGTH
+
+    with pytest.raises(ValidationError):
+        GeneratedSolutionPipelineStep(title=f"{title} 추가", **step_fields)
+
+
 def test_idea_api_request_id_is_shared_with_provider_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -495,7 +518,7 @@ def test_gemini_구체화_429_대체_모델_실패_시_할당량_오류를_전�
 class FakeIdeaGenerator:
     def generate(self, prompt: str, source_documents: list) -> GeneratedIdeas:
         return GeneratedIdeas(
-            focus_items=["초기 고객", "검증 방법"],
+            focus_items=["초기 고객", "검증 방법", "시장 적합성"],
             interest_categories=["식품·농업"],
             suggestions=[
                 {

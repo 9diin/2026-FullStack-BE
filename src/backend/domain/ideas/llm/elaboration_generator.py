@@ -21,6 +21,7 @@ from backend.domain.ideas.llm.idea_generator import (
 )
 from backend.domain.ideas.llm.response_schema import build_response_schema
 from backend.domain.ideas.schemas.idea_elaboration import (
+    SOLUTION_PIPELINE_TITLE_MAX_LENGTH,
     SolutionMetric,
     SolutionValidation,
 )
@@ -93,7 +94,7 @@ class GeneratedAICoaching(BaseModel):
 class GeneratedSolutionPipelineStep(BaseModel):
     order: int = Field(ge=1, le=4)
     category: str = Field(min_length=1, max_length=60)
-    title: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1, max_length=SOLUTION_PIPELINE_TITLE_MAX_LENGTH)
     subtitle: str = Field(min_length=1, max_length=150)
     description: str = Field(min_length=1, max_length=1000)
     technology_label: str = Field(min_length=1, max_length=80)
@@ -302,6 +303,7 @@ class GeminiIdeaElaborationGenerator:
             "   - summary와 파이프라인 4단계를 선택 아이디어와 페인포인트에 구체적으로 "
             "연결합니다. 각 단계의 addresses_pain_point_orders는 문제 순번 1~3만 "
             "사용합니다.\n"
+            f"   - 파이프라인 각 단계의 title은 공백 포함 {SOLUTION_PIPELINE_TITLE_MAX_LENGTH}자 이하로 작성합니다.\n"
             "   - validation은 실증 근거가 제공되지 않으면 status='unknown', score=null,\n"
             "     label='검증 상태 미확인', evidence_ids=[]로 작성합니다.\n"
             "   - 지표는 확인된 근거가 있을 때만 작성합니다.\n"

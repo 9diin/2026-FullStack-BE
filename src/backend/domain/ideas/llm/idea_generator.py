@@ -13,6 +13,7 @@ from backend.core.config import settings
 from backend.core.request_context import get_request_id
 from backend.domain.ideas.llm.response_schema import build_response_schema
 from backend.domain.ideas.schemas.idea_generation import (
+    FOCUS_ITEM_MAX_LENGTH,
     FocusItem,
     IdeaDetail,
     InterestCategory,
@@ -34,7 +35,7 @@ class GeneratedSuggestion(BaseModel):
 
 
 class GeneratedIdeas(BaseModel):
-    focus_items: list[FocusItem] = Field(min_length=1, max_length=8)
+    focus_items: list[FocusItem] = Field(min_length=3, max_length=3)
     interest_categories: list[InterestCategory] = Field(min_length=1, max_length=3)
     suggestions: list[GeneratedSuggestion] = Field(min_length=3, max_length=3)
 
@@ -103,6 +104,8 @@ class GeminiIdeaGenerator:
                         "공개하지 마세요. "
                         "문서에 없는 시장 규모, 매출, 고객 수, 경쟁사 사실이나 "
                         "외부 출처를 만들지 마세요. 추측은 사실처럼 표현하지 마세요. "
+                        "구조화 포커스 레이어용 짧은 해시태그를 정확히 3개 반환하세요. "
+                        f"각 항목은 공백 포함 {FOCUS_ITEM_MAX_LENGTH}자 이하로 작성하세요. "
                         "서로 다른 해결 방향의 아이디어 3개를 한국어로 반환하세요. "
                         "interest_categories는 다음 분야 중 1~3개를 선택하세요: "
                         "소프트웨어·AI, 헬스케어, 교육, 금융, 환경·에너지, 식품·농업, "
@@ -143,6 +146,8 @@ class GeminiIdeaGenerator:
                 )
                 if status_code in {401, 403}:
                     client.close()
+                    if status_code == 401:
+                        raise IdeaGeneratorAuthenticationError from exc
                     raise IdeaGeneratorConfigurationError from exc
                 if status_code in {400, 404}:
                     last_configuration_error = exc
@@ -196,6 +201,10 @@ class IdeaGeneratorRateLimited(Exception):
 
 
 class IdeaGeneratorConfigurationError(Exception):
+    pass
+
+
+class IdeaGeneratorAuthenticationError(IdeaGeneratorConfigurationError):
     pass
 
 
