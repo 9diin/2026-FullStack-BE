@@ -7,6 +7,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from google.genai._gaos.errors import GenAiDefaultError
+from google.genai._gaos.lib.compat_errors import (
+    APIError as InteractionsAPIError,
+)
 from google.genai._gaos.lib.compat_errors import BadRequestError
 from pydantic import SecretStr
 from sqlalchemy import create_engine
@@ -476,6 +479,7 @@ def test_gemini_adapter_requests_and_validates_structured_output(monkeypatch) ->
             captured["closed"] = True
 
     monkeypatch.setattr(settings, "GEMINI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_SECONDS", 75.0)
     monkeypatch.setattr(
         "backend.domain.ideas.llm.idea_generator.genai.Client", FakeClient
     )
@@ -483,8 +487,8 @@ def test_gemini_adapter_requests_and_validates_structured_output(monkeypatch) ->
     result = GeminiIdeaGenerator().generate("교육 아이디어", [])
 
     assert result == generated
-    assert captured["timeout"] == min(settings.LLM_TIMEOUT_SECONDS, 30.0)
-    assert captured["client_options"]["http_options"].timeout == 30_000
+    assert captured["timeout"] == 75.0
+    assert captured["client_options"]["http_options"].timeout == 75_000
     retry_options = captured["client_options"]["http_options"].retry_options
     assert retry_options.attempts == 1
     assert 429 not in retry_options.http_status_codes
@@ -582,6 +586,41 @@ def test_gemini_timeout_maps_to_generation_timeout(monkeypatch) -> None:
 
     with pytest.raises(IdeaGenerationTimeout):
         GeminiIdeaGenerator().generate("교육 아이디어", [])
+
+
+def test_gemini_sdk_wrapped_timeout_maps_to_generation_timeout_without_fallback(
+    monkeypatch,
+) -> None:
+    attempted_models: list[str] = []
+
+    class FakeInteractions:
+        def create(self, **kwargs: object) -> None:
+            attempted_models.append(str(kwargs["model"]))
+            raise InteractionsAPIError(
+                "Request timed out. This is a client-side timeout.",
+                request=httpx.Request("POST", "https://example.test/interactions"),
+                body={},
+            )
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "GEMINI_MODEL", "slow-model")
+    monkeypatch.setattr(
+        "backend.domain.ideas.llm.idea_generator.genai.Client", FakeClient
+    )
+
+    with pytest.raises(IdeaGenerationTimeout):
+        GeminiIdeaGenerator().generate("교육 아이디어", [])
+
+    assert attempted_models == ["slow-model"]
 
 
 def test_gemini_rejected_configuration_is_not_reported_as_network_failure(

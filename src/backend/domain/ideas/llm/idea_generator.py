@@ -22,6 +22,14 @@ from backend.domain.ideas.schemas.idea_generation import (
 logger = logging.getLogger(__name__)
 
 GeminiAPIError = errors.APIError | GenAiError | InteractionsAPIError
+MAX_GEMINI_REQUEST_TIMEOUT_SECONDS = 110.0
+
+
+def is_gemini_client_timeout(status_code: int | None, message: str) -> bool:
+    normalized_message = message.casefold()
+    return status_code is None and (
+        "timed out" in normalized_message or "timeout" in normalized_message
+    )
 
 
 class SourceDocument(Protocol):
@@ -61,7 +69,9 @@ class GeminiIdeaGenerator:
                 logger.warning("Invalid Gemini base URL configuration")
                 raise IdeaGeneratorConfigurationError
 
-        request_timeout_seconds = min(settings.LLM_TIMEOUT_SECONDS, 30.0)
+        request_timeout_seconds = min(
+            settings.LLM_TIMEOUT_SECONDS, MAX_GEMINI_REQUEST_TIMEOUT_SECONDS
+        )
         client = genai.Client(
             api_key=settings.GEMINI_API_KEY.get_secret_value(),
             http_options=types.HttpOptions(
@@ -132,6 +142,7 @@ class GeminiIdeaGenerator:
                     model_name,
                 )
                 last_exc = IdeaGenerationTimeout(str(exc))
+                break
             except (errors.APIError, GenAiError, InteractionsAPIError) as exc:
                 status_code = (
                     exc.code if isinstance(exc, errors.APIError) else exc.status_code
@@ -155,6 +166,14 @@ class GeminiIdeaGenerator:
                 if status_code == 429:
                     last_rate_limit_error = exc
                     continue
+                if is_gemini_client_timeout(status_code, provider_message):
+                    logger.warning(
+                        "Gemini request timed out request_id=%s model=%s",
+                        get_request_id(),
+                        model_name,
+                    )
+                    last_exc = IdeaGenerationTimeout(provider_message)
+                    break
                 last_exc = IdeaGeneratorUnavailable(str(exc))
             except httpx.RequestError as exc:
                 logger.warning(
