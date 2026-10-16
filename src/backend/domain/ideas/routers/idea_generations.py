@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi import APIRouter, Depends, File, Request, UploadFile, status
 from sqlalchemy.orm import Session
 
 from backend.core.config import settings
@@ -10,6 +10,7 @@ from backend.domain.ideas.llm.elaboration_generator import (
     IdeaElaborationGenerator,
 )
 from backend.domain.ideas.llm.idea_generator import GeminiIdeaGenerator, IdeaGenerator
+from backend.domain.ideas.rate_limit import anonymous_generation_rate_limiter
 from backend.domain.ideas.schemas.idea_elaboration import (
     ElaborationRequest,
     ElaborationResponse,
@@ -23,9 +24,15 @@ from backend.domain.ideas.schemas.idea_generation import (
     SourceFileUploadResponse,
 )
 from backend.domain.ideas.services.idea_elaboration import IdeaElaborationService
-from backend.domain.ideas.services.idea_generation import IdeaGenerationService
+from backend.domain.ideas.services.idea_generation import (
+    IdeaAPIError,
+    IdeaGenerationService,
+)
 from backend.domain.users.models.user import User
-from backend.domain.users.routers.dependencies import get_current_user
+from backend.domain.users.routers.dependencies import (
+    get_current_user,
+    get_optional_current_user,
+)
 
 router = APIRouter(tags=["IDEA GENERATION"])
 ERROR_RESPONSES = {
@@ -94,9 +101,19 @@ async def upload_source_file(
 )
 def create_idea_generation(
     body: IdeaGenerationRequest,
-    current_user: User = Depends(get_current_user),
+    request: Request,
+    current_user: User | None = Depends(get_optional_current_user),
     service: IdeaGenerationService = Depends(get_idea_generation_service),
 ) -> IdeaGenerationResponse:
+    if current_user is None:
+        client_id = request.client.host if request.client is not None else "unknown"
+        if not anonymous_generation_rate_limiter.allow(client_id):
+            raise IdeaAPIError(
+                429,
+                "ANONYMOUS_RATE_LIMITED",
+                "비로그인 아이디어 생성은 IP별 시간당 5회까지 가능합니다. "
+                "로그인 후 다시 시도해 주세요.",
+            )
     return service.generate(current_user, body)
 
 

@@ -96,6 +96,7 @@ class IdeaGenerationContext(BaseModel):
 class IdeaGenerationResponse(BaseModel):
     generation_id: UUID
     created_at: datetime
+    persisted: bool = True
     context: IdeaGenerationContext
     suggestions: list[IdeaSuggestionResponse] = Field(min_length=3, max_length=3)
 

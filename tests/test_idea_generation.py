@@ -31,6 +31,7 @@ from backend.domain.ideas.models.idea_generation import (
     IdeaSuggestion,
     SourceFile,
 )
+from backend.domain.ideas.rate_limit import anonymous_generation_rate_limiter
 from backend.domain.ideas.routers.idea_generations import (
     get_idea_generator,
     router,
@@ -40,7 +41,10 @@ from backend.domain.users.models.email_verification import (
 )
 from backend.domain.users.models.user import User
 from backend.domain.users.models.user_profile import UserProfile  # noqa: F401
-from backend.domain.users.routers.dependencies import get_current_user
+from backend.domain.users.routers.dependencies import (
+    get_current_user,
+    get_optional_current_user,
+)
 
 
 def provider_error(status_code: int, message: str) -> GenAiDefaultError:
@@ -110,6 +114,7 @@ class RateLimitedIdeaGenerator:
 def client() -> Generator[
     tuple[TestClient, sessionmaker[Session], FakeIdeaGenerator], None, None
 ]:
+    anonymous_generation_rate_limiter.reset()
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -142,6 +147,7 @@ def client() -> Generator[
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_optional_current_user] = lambda: user
     app.dependency_overrides[get_idea_generator] = lambda: generator
 
     with TestClient(app) as test_client:
@@ -163,6 +169,7 @@ def test_generate_persists_prompt_categories_and_three_ideas(client) -> None:
     assert generator.received_prompt == "교육 현장의 반복 업무를 줄이고 싶어요."
     assert body["context"]["source_files"] == []
     assert len(body["suggestions"]) == 3
+    assert body["persisted"] is True
     assert body["context"]["focus_items"] == ["초기 고객", "검증 방법"]
 
     with session_factory() as db:
@@ -170,6 +177,50 @@ def test_generate_persists_prompt_categories_and_three_ideas(client) -> None:
         assert generation.prompt == "교육 현장의 반복 업무를 줄이고 싶어요."
         assert generation.interest_categories == ["교육"]
         assert db.query(IdeaSuggestion).count() == 3
+
+
+def test_anonymous_generation_returns_three_ideas_without_persisting(client) -> None:
+    test_client, session_factory, generator = client
+    test_client.app.dependency_overrides[get_optional_current_user] = lambda: None
+
+    response = test_client.post(
+        "/api/v1/idea-generations",
+        json={"prompt": "로그인 없이 아이디어를 미리 확인합니다."},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["persisted"] is False
+    assert len(body["suggestions"]) == 3
+    assert generator.received_prompt == "로그인 없이 아이디어를 미리 확인합니다."
+    with session_factory() as db:
+        assert db.query(IdeaGeneration).count() == 0
+        assert db.query(IdeaSuggestion).count() == 0
+
+
+def test_anonymous_generation_is_limited_to_five_requests_per_hour(client) -> None:
+    test_client, session_factory, _generator = client
+    test_client.app.dependency_overrides[get_optional_current_user] = lambda: None
+
+    responses = [
+        test_client.post(
+            "/api/v1/idea-generations",
+            json={"prompt": f"익명 요청 {index}"},
+        )
+        for index in range(6)
+    ]
+
+    assert [response.status_code for response in responses] == [
+        200,
+        200,
+        200,
+        200,
+        200,
+        429,
+    ]
+    assert responses[-1].json()["error"]["code"] == "ANONYMOUS_RATE_LIMITED"
+    with session_factory() as db:
+        assert db.query(IdeaGeneration).count() == 0
 
 
 def test_upload_and_generation_only_use_the_authenticated_users_file(client) -> None:
@@ -307,16 +358,19 @@ def test_openapi_describes_stable_error_response(client) -> None:
     assert "APIErrorResponse" in str(generation_responses["422"])
 
 
-def test_missing_bearer_credentials_remain_unauthenticated(client) -> None:
+def test_missing_bearer_credentials_allow_ephemeral_generation(client) -> None:
     test_client, _session_factory, _generator = client
     test_client.app.dependency_overrides.pop(get_current_user)
+    test_client.app.dependency_overrides.pop(get_optional_current_user)
 
     response = test_client.post(
         "/api/v1/idea-generations",
-        json={"prompt": "이 요청은 인증을 요구합니다."},
+        json={"prompt": "비로그인 아이디어 생성 결과는 저장되지 않습니다."},
     )
 
-    assert response.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["persisted"] is False
+    assert len(response.json()["suggestions"]) == 3
 
 
 def test_missing_llm_key_returns_unavailable_error(client, monkeypatch) -> None:
@@ -366,6 +420,23 @@ def test_cors_headers_are_added_to_unhandled_server_errors() -> None:
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
+def test_cors_preflight_allows_frontend_loopback_ip_origin() -> None:
+    app = CorsFastAPI(cors_origins=["http://localhost:3000", "http://127.0.0.1:3000"])
+
+    with TestClient(app) as test_client:
+        response = test_client.options(
+            "/api/v1/idea-generations",
+            headers={
+                "Origin": "http://127.0.0.1:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:3000"
+
+
 def test_gemini_adapter_requests_and_validates_structured_output(monkeypatch) -> None:
     generated = GeneratedIdeas(
         focus_items=["초기 사용자", "검증 지표"],
@@ -400,6 +471,11 @@ def test_gemini_adapter_requests_and_validates_structured_output(monkeypatch) ->
     result = GeminiIdeaGenerator().generate("교육 아이디어", [])
 
     assert result == generated
+    assert captured["timeout"] == min(settings.LLM_TIMEOUT_SECONDS, 30.0)
+    assert captured["client_options"]["http_options"].timeout == 30_000
+    retry_options = captured["client_options"]["http_options"].retry_options
+    assert retry_options.attempts == 1
+    assert 429 not in retry_options.http_status_codes
     assert captured["model"] == settings.GEMINI_MODEL
     assert captured["response_format"]["mime_type"] == "application/json"
     assert "$defs" not in captured["response_format"]["schema"]

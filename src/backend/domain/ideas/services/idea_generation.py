@@ -96,7 +96,7 @@ class IdeaGenerationService:
         )
 
     def generate(
-        self, user: User, request: IdeaGenerationRequest
+        self, user: User | None, request: IdeaGenerationRequest
     ) -> IdeaGenerationResponse:
         if request.project_id is not None:
             raise IdeaAPIError(
@@ -108,6 +108,12 @@ class IdeaGenerationService:
 
         source_files: list[SourceFile] = []
         if request.source_file_ids:
+            if user is None:
+                raise IdeaAPIError(
+                    401,
+                    "AUTHENTICATION_REQUIRED",
+                    "참조 파일을 사용하려면 로그인해 주세요.",
+                )
             source_files = (
                 self.db.query(SourceFile)
                 .filter(
@@ -170,6 +176,26 @@ class IdeaGenerationService:
             ) from exc
 
         self._validate_generated(generated)
+        if user is None:
+            generation_id = uuid4()
+            return IdeaGenerationResponse(
+                generation_id=generation_id,
+                created_at=datetime.now(UTC),
+                persisted=False,
+                context=IdeaGenerationContext(
+                    source_files=[],
+                    focus_items=generated.focus_items,
+                ),
+                suggestions=[
+                    IdeaSuggestionResponse(
+                        id=str(uuid4()),
+                        title=suggestion.title.strip(),
+                        details=[detail.strip() for detail in suggestion.details],
+                    )
+                    for suggestion in generated.suggestions
+                ],
+            )
+
         generation = IdeaGeneration(
             user_id=user.id,
             project_id=request.project_id,

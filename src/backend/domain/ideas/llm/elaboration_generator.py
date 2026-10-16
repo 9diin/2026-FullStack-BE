@@ -244,11 +244,16 @@ class GeminiIdeaElaborationGenerator:
                 logger.warning("Invalid Gemini base URL configuration")
                 raise IdeaGeneratorConfigurationError
 
+        request_timeout_seconds = min(settings.LLM_TIMEOUT_SECONDS, 30.0)
         client = genai.Client(
             api_key=settings.GEMINI_API_KEY.get_secret_value(),
             http_options=types.HttpOptions(
                 base_url=settings.GEMINI_BASE_URL or None,
-                timeout=int(settings.LLM_TIMEOUT_SECONDS * 1000),
+                timeout=int(request_timeout_seconds * 1000),
+                retry_options=types.HttpRetryOptions(
+                    attempts=1,
+                    http_status_codes=[408, 500, 502, 503, 504],
+                ),
             ),
         )
         documents = [
@@ -322,6 +327,7 @@ class GeminiIdeaElaborationGenerator:
         for model_name in candidate_models:
             try:
                 interaction = client.interactions.create(
+                    timeout=request_timeout_seconds,
                     model=model_name,
                     input=json.dumps(
                         {

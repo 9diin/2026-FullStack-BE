@@ -18,13 +18,14 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: SecretStr | None = None
     GEMINI_BASE_URL: str | None = None
     GEMINI_MODEL: str = "gemini-3.8-flash"
-    LLM_TIMEOUT_SECONDS: float = 60
+    LLM_TIMEOUT_SECONDS: float = 30
     LLM_MAX_COMPLETION_TOKENS: int = 1600
     SOURCE_FILE_MAX_BYTES: int = 20 * 1024 * 1024
     IDEA_SOURCE_MAX_CHARS: int = 20000
     REFRESH_COOKIE_SECURE: bool = True
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "http://localhost:5173",
     ]
     SMTP_HOST: str | None = None

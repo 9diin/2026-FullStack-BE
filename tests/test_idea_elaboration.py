@@ -47,6 +47,7 @@ from backend.domain.ideas.models.idea_generation import (
     IdeaSelectionEvent,  # noqa: F401 - Base 인식용
     SourceFile,  # noqa: F401 - Base 인식용
 )
+from backend.domain.ideas.rate_limit import anonymous_generation_rate_limiter
 from backend.domain.ideas.routers.idea_generations import (
     get_idea_elaboration_generator,
     get_idea_generator,
@@ -231,7 +232,10 @@ from backend.domain.users.models.email_verification import (
 )
 from backend.domain.users.models.user import User
 from backend.domain.users.models.user_profile import UserProfile  # noqa: F401
-from backend.domain.users.routers.dependencies import get_current_user
+from backend.domain.users.routers.dependencies import (
+    get_current_user,
+    get_optional_current_user,
+)
 
 
 def test_해결방안이_잘못된_참조와_미확인_수치를_거부한다() -> None:
@@ -512,6 +516,7 @@ class FakeIdeaGenerator:
 
 @pytest.fixture
 def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
+    anonymous_generation_rate_limiter.reset()
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -543,6 +548,7 @@ def client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, None]:
 
     app.dependency_overrides[get_db] = override_db
     app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_optional_current_user] = lambda: user
     app.dependency_overrides[get_idea_generator] = lambda: FakeIdeaGenerator()
     app.dependency_overrides[get_idea_elaboration_generator] = lambda: (
         FakeIdeaElaborationGenerator()
