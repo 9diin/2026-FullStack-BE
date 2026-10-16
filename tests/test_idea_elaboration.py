@@ -18,7 +18,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from google.genai._gaos.errors import GenAiDefaultError
-from google.genai._gaos.lib.compat_errors import BadRequestError
+from google.genai._gaos.lib.compat_errors import (
+    APIError as InteractionsAPIError,
+)
+from google.genai._gaos.lib.compat_errors import (
+    BadRequestError,
+)
 from pydantic import SecretStr, ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -39,6 +44,7 @@ from backend.domain.ideas.llm.elaboration_generator import (
 )
 from backend.domain.ideas.llm.idea_generator import (
     GeneratedIdeas,
+    IdeaGenerationTimeout,
     IdeaGeneratorConfigurationError,
     IdeaGeneratorRateLimited,
 )
@@ -337,6 +343,77 @@ def test_interactions_api_bad_request_is_mapped_to_configuration_error(
 
     with pytest.raises(IdeaGeneratorConfigurationError):
         GeminiIdeaElaborationGenerator().generate("prompt", "idea", [], [])
+
+
+def test_gemini_구체화_sdk_timeout_오류를_생성시간초과로_매핑한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempted_models: list[str] = []
+
+    class FakeInteractions:
+        def create(self, **kwargs: object) -> None:
+            attempted_models.append(str(kwargs["model"]))
+            raise InteractionsAPIError(
+                "Request timed out. This is a client-side timeout.",
+                request=httpx.Request("POST", "https://example.test/interactions"),
+                body={},
+            )
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "GEMINI_MODEL", "slow-model")
+    monkeypatch.setattr(
+        "backend.domain.ideas.llm.elaboration_generator.genai.Client",
+        FakeClient,
+    )
+
+    with pytest.raises(IdeaGenerationTimeout):
+        GeminiIdeaElaborationGenerator().generate("prompt", "idea", [], [])
+
+    assert attempted_models == ["slow-model"]
+
+
+def test_gemini_구체화_요청제한시간이_설정값을_사용한다(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated = FakeIdeaElaborationGenerator().generate(
+        "prompt", "아이디어" * 20, [], []
+    )
+    captured: dict[str, object] = {}
+
+    class FakeInteractions:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            captured.update(kwargs)
+            return SimpleNamespace(output_text=generated.model_dump_json())
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+        def __init__(self, **kwargs: object) -> None:
+            captured["client_options"] = kwargs
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_SECONDS", 75.0)
+    monkeypatch.setattr(
+        "backend.domain.ideas.llm.elaboration_generator.genai.Client",
+        FakeClient,
+    )
+
+    GeminiIdeaElaborationGenerator().generate("prompt", "idea", [], [])
+
+    assert captured["timeout"] == 75.0
+    assert captured["client_options"]["http_options"].timeout == 75_000
 
 
 def test_gemini_response_schema_inlines_refs_and_normalizes_nullable_unions() -> None:

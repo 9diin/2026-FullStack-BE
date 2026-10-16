@@ -12,12 +12,14 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from backend.core.config import settings
 from backend.core.request_context import get_request_id
 from backend.domain.ideas.llm.idea_generator import (
+    MAX_GEMINI_REQUEST_TIMEOUT_SECONDS,
     IdeaGenerationTimeout,
     IdeaGeneratorConfigurationError,
     IdeaGeneratorRateLimited,
     IdeaGeneratorUnavailable,
     InvalidIdeaGeneration,
     SourceDocument,
+    is_gemini_client_timeout,
 )
 from backend.domain.ideas.llm.response_schema import build_response_schema
 from backend.domain.ideas.schemas.idea_elaboration import (
@@ -245,7 +247,9 @@ class GeminiIdeaElaborationGenerator:
                 logger.warning("Invalid Gemini base URL configuration")
                 raise IdeaGeneratorConfigurationError
 
-        request_timeout_seconds = min(settings.LLM_TIMEOUT_SECONDS, 30.0)
+        request_timeout_seconds = min(
+            settings.LLM_TIMEOUT_SECONDS, MAX_GEMINI_REQUEST_TIMEOUT_SECONDS
+        )
         client = genai.Client(
             api_key=settings.GEMINI_API_KEY.get_secret_value(),
             http_options=types.HttpOptions(
@@ -366,6 +370,7 @@ class GeminiIdeaElaborationGenerator:
                     model_name,
                 )
                 last_exc = IdeaGenerationTimeout(str(exc))
+                break
             except (errors.APIError, GenAiError, InteractionsAPIError) as exc:
                 status_code = (
                     exc.code if isinstance(exc, errors.APIError) else exc.status_code
@@ -387,6 +392,14 @@ class GeminiIdeaElaborationGenerator:
                 if status_code == 429:
                     last_rate_limit_error = exc
                     continue
+                if is_gemini_client_timeout(status_code, provider_message):
+                    logger.warning(
+                        "Gemini elaboration request timed out request_id=%s model=%s",
+                        get_request_id(),
+                        model_name,
+                    )
+                    last_exc = IdeaGenerationTimeout(provider_message)
+                    break
                 # 503 등 일시적 과부하 시 다음 후보 모델로 재시도
                 last_exc = IdeaGeneratorUnavailable(str(exc))
             except httpx.RequestError as exc:
