@@ -10,6 +10,10 @@ from backend.domain.ideas.llm.elaboration_generator import (
     IdeaElaborationGenerator,
 )
 from backend.domain.ideas.llm.idea_generator import GeminiIdeaGenerator, IdeaGenerator
+from backend.domain.ideas.schemas.idea_elaboration import (
+    ElaborationRequest,
+    ElaborationResponse,
+)
 from backend.domain.ideas.schemas.idea_generation import (
     APIErrorResponse,
     IdeaGenerationRequest,
@@ -18,12 +22,8 @@ from backend.domain.ideas.schemas.idea_generation import (
     IdeaSelectionResponse,
     SourceFileUploadResponse,
 )
-from backend.domain.ideas.schemas.idea_elaboration import (
-    ElaborationRequest,
-    ElaborationResponse,
-)
-from backend.domain.ideas.services.idea_generation import IdeaGenerationService
 from backend.domain.ideas.services.idea_elaboration import IdeaElaborationService
+from backend.domain.ideas.services.idea_generation import IdeaGenerationService
 from backend.domain.users.models.user import User
 from backend.domain.users.routers.dependencies import get_current_user
 
@@ -38,6 +38,7 @@ ERROR_RESPONSES = {
         413: "파일 크기 제한을 초과했습니다.",
         415: "지원하지 않는 파일 형식입니다.",
         422: "요청 또는 참조 파일을 검증할 수 없습니다.",
+        429: "Gemini API 요청 할당량을 초과했습니다.",
         500: "내부 오류입니다.",
         502: "LLM 결과가 유효하지 않습니다.",
         503: "LLM 서비스를 사용할 수 없습니다.",
@@ -55,9 +56,6 @@ def get_idea_generation_service(
     generator: IdeaGenerator = Depends(get_idea_generator),
 ) -> IdeaGenerationService:
     return IdeaGenerationService(db, generator)
-
-
-
 
 
 def get_idea_elaboration_generator() -> IdeaElaborationGenerator:
@@ -120,14 +118,11 @@ def select_idea(
     "/idea-generations/{generation_id}/elaboration",
     response_model=ElaborationResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={
-        **ERROR_RESPONSES,
-        409: {"model": APIErrorResponse, "description": "이미 구체화 데이터가 존재합니다."},
-    },
+    responses=ERROR_RESPONSES,
     summary="아이디어 구체화 데이터 생성",
     description=(
-        "선택한 아이디어 제안의 문제인식·페르소나·3대 페인포인트 악순환 고리·AI 코칭 데이터를 "
-        "저장합니다. 동일 generation_id에 대해 최초 1회만 생성 가능합니다."
+        "선택한 아이디어 제안의 문제인식·페르소나·3대 페인포인트 악순환 고리·AI 코칭과, "
+        "해당 페인포인트 ID를 참조하는 해결방안을 함께 저장합니다."
     ),
 )
 def create_elaboration(
@@ -142,7 +137,13 @@ def create_elaboration(
 @router.get(
     "/idea-generations/{generation_id}/elaboration",
     response_model=ElaborationResponse,
-    responses=ERROR_RESPONSES,
+    responses={
+        **ERROR_RESPONSES,
+        409: {
+            "model": APIErrorResponse,
+            "description": "해결방안이 없는 기존 구체화 데이터입니다.",
+        },
+    },
     summary="아이디어 구체화 데이터 조회",
     description="generation_id에 연결된 구체화 데이터를 반환합니다.",
 )

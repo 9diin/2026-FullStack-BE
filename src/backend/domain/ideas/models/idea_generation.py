@@ -127,6 +127,8 @@ class IdeaElaboration(Base):
     solution_evidence: Mapped[str] = mapped_column(Text, nullable=False)
     # AI 평가위원 코칭 피드백 문장
     feedback_review: Mapped[str] = mapped_column(Text, nullable=False)
+    # 문제인식의 페인포인트 ID를 참조하는 해결방안 JSON
+    solution: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )

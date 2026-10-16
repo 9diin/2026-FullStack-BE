@@ -1,11 +1,9 @@
-from fastapi import FastAPI  # noqa: I001
-from fastapi.middleware.cors import CORSMiddleware
-
-
 # pyrefly: ignore [missing-import]
 from api import api_router
 from backend.core.config import settings
+from backend.core.cors import CorsFastAPI
 from backend.core.database import Base, engine
+from backend.core.migrations import apply_compatibility_migrations
 from backend.domain.ideas.errors import register_idea_error_handlers
 from backend.domain.ideas.models.idea_generation import (  # noqa: F401
     IdeaElaboration,
@@ -22,9 +20,9 @@ from backend.domain.users.models.email_verification import (  # noqa: F401
 from backend.domain.users.models.user import User  # noqa: F401
 from backend.domain.users.models.user_profile import UserProfile  # noqa: F401
 
-
 # FastAPI 애플리케이션 초기화
-app = FastAPI(
+app = CorsFastAPI(
+    cors_origins=settings.CORS_ORIGINS,
     title="1인 예비창업자/초기창업자를 위한 AI 사업계획서 도출 플랫폼",
     description="프롬프트 기반 아이디어 생성과 사용자 선택 데이터 기반 트렌드 분석 API",
     version="1.0.0",
@@ -32,22 +30,13 @@ app = FastAPI(
 register_idea_error_handlers(app)
 
 
-# [권장] 프런트엔드 연동을 위한 CORS 미들웨어 설정
-app.add_middleware(
-    CORSMiddleware,
-    # 쿠키 인증을 쓰면 "*" 대신 프런트엔드 주소를 명시해야 브라우저가 쿠키를 허용합니다.
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # 도메인 라우터 등록
 app.include_router(api_router)
 
 # "자, 우리가 준비한 설계도(Base)를 가지고, Engine을 통해 Supabase로 달려가서
 # 아직 테이블이 없으면 당장 지어 올려라!"라고 명령하는 코드입니다.
 Base.metadata.create_all(bind=engine)
+apply_compatibility_migrations(engine)
 
 
 # 서버 헬스체크용 루트 앤드포인트

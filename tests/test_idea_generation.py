@@ -6,13 +6,15 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from google.genai.errors import APIError
+from google.genai._gaos.errors import GenAiDefaultError
+from google.genai._gaos.lib.compat_errors import BadRequestError
 from pydantic import SecretStr
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.core.config import settings
+from backend.core.cors import CorsFastAPI
 from backend.core.database import Base, get_db
 from backend.domain.ideas.errors import register_idea_error_handlers
 from backend.domain.ideas.llm.idea_generator import (
@@ -20,6 +22,7 @@ from backend.domain.ideas.llm.idea_generator import (
     GeneratedIdeas,
     IdeaGenerationTimeout,
     IdeaGeneratorConfigurationError,
+    IdeaGeneratorRateLimited,
     InvalidIdeaGeneration,
 )
 from backend.domain.ideas.models.idea_generation import (
@@ -38,6 +41,24 @@ from backend.domain.users.models.email_verification import (
 from backend.domain.users.models.user import User
 from backend.domain.users.models.user_profile import UserProfile  # noqa: F401
 from backend.domain.users.routers.dependencies import get_current_user
+
+
+def provider_error(status_code: int, message: str) -> GenAiDefaultError:
+    response = httpx.Response(
+        status_code,
+        json={"error": {"message": message}},
+        request=httpx.Request("POST", "https://example.test/interactions"),
+    )
+    return GenAiDefaultError("", response)
+
+
+def interactions_provider_error(status_code: int, message: str) -> BadRequestError:
+    response = httpx.Response(
+        status_code,
+        json={"error": {"message": message}},
+        request=httpx.Request("POST", "https://example.test/interactions"),
+    )
+    return BadRequestError(message, response=response, body=response.json())
 
 
 class FakeIdeaGenerator:
@@ -76,6 +97,13 @@ class InvalidConfigurationGenerator:
         self, prompt: str, source_documents: list[SourceFile]
     ) -> GeneratedIdeas:
         raise IdeaGeneratorConfigurationError
+
+
+class RateLimitedIdeaGenerator:
+    def generate(
+        self, prompt: str, source_documents: list[SourceFile]
+    ) -> GeneratedIdeas:
+        raise IdeaGeneratorRateLimited
 
 
 @pytest.fixture
@@ -306,6 +334,38 @@ def test_missing_llm_key_returns_unavailable_error(client, monkeypatch) -> None:
     assert "request_id" in response.json()["error"]
 
 
+def test_quota_exceeded_returns_actionable_rate_limit_error(client) -> None:
+    test_client, _session_factory, _generator = client
+    test_client.app.dependency_overrides[get_idea_generator] = lambda: (
+        RateLimitedIdeaGenerator()
+    )
+
+    response = test_client.post(
+        "/api/v1/idea-generations",
+        json={"prompt": "한도 초과 응답을 확인합니다."},
+    )
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "LLM_QUOTA_EXCEEDED"
+    assert "Google AI Studio" in response.json()["error"]["message"]
+
+
+def test_cors_headers_are_added_to_unhandled_server_errors() -> None:
+    app = CorsFastAPI(cors_origins=["http://localhost:3000"])
+
+    @app.get("/failure")
+    def fail() -> None:
+        raise RuntimeError("unexpected failure")
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        response = test_client.get(
+            "/failure", headers={"Origin": "http://localhost:3000"}
+        )
+
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
 def test_gemini_adapter_requests_and_validates_structured_output(monkeypatch) -> None:
     generated = GeneratedIdeas(
         focus_items=["초기 사용자", "검증 지표"],
@@ -318,13 +378,13 @@ def test_gemini_adapter_requests_and_validates_structured_output(monkeypatch) ->
     )
     captured: dict[str, object] = {}
 
-    class FakeModels:
-        def generate_content(self, **kwargs: object) -> SimpleNamespace:
+    class FakeInteractions:
+        def create(self, **kwargs: object) -> SimpleNamespace:
             captured.update(kwargs)
-            return SimpleNamespace(parsed=generated, text=None)
+            return SimpleNamespace(output_text=generated.model_dump_json())
 
     class FakeClient:
-        models = FakeModels()
+        interactions = FakeInteractions()
 
         def __init__(self, **kwargs: object) -> None:
             captured["client_options"] = kwargs
@@ -341,16 +401,45 @@ def test_gemini_adapter_requests_and_validates_structured_output(monkeypatch) ->
 
     assert result == generated
     assert captured["model"] == settings.GEMINI_MODEL
+    assert captured["response_format"]["mime_type"] == "application/json"
+    assert "$defs" not in captured["response_format"]["schema"]
+    assert "$ref" not in str(captured["response_format"]["schema"])
+    assert captured["store"] is False
     assert captured["closed"] is True
 
 
+def test_interactions_api_bad_request_is_mapped_to_configuration_error(
+    monkeypatch,
+) -> None:
+    class FakeInteractions:
+        def create(self, **_kwargs: object) -> None:
+            raise interactions_provider_error(400, "invalid_request")
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(
+        "backend.domain.ideas.llm.idea_generator.genai.Client", FakeClient
+    )
+
+    with pytest.raises(IdeaGeneratorConfigurationError):
+        GeminiIdeaGenerator().generate("교육 아이디어", [])
+
+
 def test_gemini_timeout_maps_to_generation_timeout(monkeypatch) -> None:
-    class FakeModels:
-        def generate_content(self, **_kwargs: object) -> None:
+    class FakeInteractions:
+        def create(self, **_kwargs: object) -> None:
             raise httpx.ReadTimeout("timeout")
 
     class FakeClient:
-        models = FakeModels()
+        interactions = FakeInteractions()
 
         def __init__(self, **_kwargs: object) -> None:
             pass
@@ -370,12 +459,12 @@ def test_gemini_timeout_maps_to_generation_timeout(monkeypatch) -> None:
 def test_gemini_rejected_configuration_is_not_reported_as_network_failure(
     monkeypatch,
 ) -> None:
-    class FakeModels:
-        def generate_content(self, **_kwargs: object) -> None:
-            raise APIError(404, {"message": "model not found"})
+    class FakeInteractions:
+        def create(self, **_kwargs: object) -> None:
+            raise provider_error(404, "model not found")
 
     class FakeClient:
-        models = FakeModels()
+        interactions = FakeInteractions()
 
         def __init__(self, **_kwargs: object) -> None:
             pass
@@ -389,6 +478,113 @@ def test_gemini_rejected_configuration_is_not_reported_as_network_failure(
     )
 
     with pytest.raises(IdeaGeneratorConfigurationError):
+        GeminiIdeaGenerator().generate("교육 아이디어", [])
+
+
+def test_gemini_400_retries_with_supported_fallback_model(monkeypatch) -> None:
+    generated = GeneratedIdeas(
+        focus_items=["초기 사용자", "검증 지표"],
+        interest_categories=["교육"],
+        suggestions=[
+            {"title": "맞춤형 학습도우미", "details": ["학습 진단", "개인별 추천"]},
+            {"title": "학부모 학습 대시보드", "details": ["진도 공유", "상담 연결"]},
+            {"title": "교사용 자료 큐레이션", "details": ["자료 탐색", "수업 활용"]},
+        ],
+    )
+    attempted_models: list[str] = []
+
+    class FakeInteractions:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            model = str(kwargs["model"])
+            attempted_models.append(model)
+            if model == "invalid-configured-model":
+                raise provider_error(400, "model is not supported")
+            return SimpleNamespace(output_text=generated.model_dump_json())
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "GEMINI_MODEL", "invalid-configured-model")
+    monkeypatch.setattr(
+        "backend.domain.ideas.llm.idea_generator.genai.Client", FakeClient
+    )
+
+    result = GeminiIdeaGenerator().generate("교육 아이디어", [])
+
+    assert result == generated
+    assert attempted_models == [
+        "invalid-configured-model",
+        "gemini-3.8-flash",
+    ]
+
+
+def test_gemini_429_retries_with_current_fallback_model(monkeypatch) -> None:
+    generated = GeneratedIdeas(
+        focus_items=["초기 사용자", "검증 지표"],
+        interest_categories=["교육"],
+        suggestions=[
+            {"title": "맞춤형 학습도우미", "details": ["학습 진단", "개인별 추천"]},
+            {"title": "학부모 학습 대시보드", "details": ["진도 공유", "상담 연결"]},
+            {"title": "교사용 자료 큐레이션", "details": ["자료 탐색", "수업 활용"]},
+        ],
+    )
+    attempted_models: list[str] = []
+
+    class FakeInteractions:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            model = str(kwargs["model"])
+            attempted_models.append(model)
+            if model == "quota-limited-model":
+                raise provider_error(429, "quota exceeded")
+            return SimpleNamespace(output_text=generated.model_dump_json())
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "GEMINI_MODEL", "quota-limited-model")
+    monkeypatch.setattr(
+        "backend.domain.ideas.llm.idea_generator.genai.Client", FakeClient
+    )
+
+    assert GeminiIdeaGenerator().generate("교육 아이디어", []) == generated
+    assert attempted_models == ["quota-limited-model", "gemini-3.8-flash"]
+
+
+def test_gemini_429_without_available_fallback_raises_rate_limit(monkeypatch) -> None:
+    class FakeInteractions:
+        def create(self, **_kwargs: object) -> None:
+            raise provider_error(429, "quota exceeded")
+
+    class FakeClient:
+        interactions = FakeInteractions()
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "GEMINI_MODEL", "gemini-3.8-flash")
+    monkeypatch.setattr(
+        "backend.domain.ideas.llm.idea_generator.genai.Client", FakeClient
+    )
+
+    with pytest.raises(IdeaGeneratorRateLimited):
         GeminiIdeaGenerator().generate("교육 아이디어", [])
 
 
@@ -417,4 +613,4 @@ def test_gemini_configuration_error_has_actionable_api_response(client) -> None:
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "LLM_CONFIGURATION_ERROR"
-    assert "키, 모델명" in response.json()["error"]["message"]
+    assert "요청 형식" in response.json()["error"]["message"]

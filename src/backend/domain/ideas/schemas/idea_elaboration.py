@@ -4,7 +4,7 @@
 """
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -116,6 +116,100 @@ class ElaborationRequest(BaseModel):
 class PainPointCycleStepResponse(PainPointCycleStep):
     """응답 전용 페인포인트 단계 (별칭 없이 스네이크 케이스 유지)"""
 
+    pain_point_id: UUID
+    order: int = Field(ge=1, le=3)
+
+
+MetricStatus = Literal["measured", "target", "estimate", "unknown"]
+
+
+class SolutionMetric(BaseModel):
+    label: str = Field(min_length=1, max_length=80)
+    value: float | int | str | None = None
+    unit: str | None = Field(default=None, max_length=30)
+    status: MetricStatus
+    basis: str | None = Field(default=None, max_length=500)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> "SolutionMetric":
+        if self.status == "unknown":
+            if self.value is not None:
+                raise ValueError("미확인 지표의 value는 null이어야 합니다.")
+        elif self.value is None:
+            raise ValueError("확인 또는 목표 지표에는 value가 필요합니다.")
+        if self.value is not None and not self.basis and not self.evidence_ids:
+            raise ValueError("수치 지표에는 근거 또는 명시적인 산출 기준이 필요합니다.")
+        return self
+
+
+class SolutionValidation(BaseModel):
+    status: MetricStatus
+    score: float | None = Field(default=None, ge=0, le=100)
+    label: str = Field(min_length=1, max_length=100)
+    evidence_ids: list[str] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_score_evidence(self) -> "SolutionValidation":
+        if self.status == "unknown" and self.score is not None:
+            raise ValueError("검증 상태가 미확인인 경우 score는 null이어야 합니다.")
+        if self.score is not None and (
+            self.status != "measured" or not self.evidence_ids
+        ):
+            raise ValueError("검증 점수에는 실측 상태와 근거 ID가 필요합니다.")
+        return self
+
+
+class SolutionPipelineStep(BaseModel):
+    solution_step_id: UUID
+    order: int = Field(ge=1, le=4)
+    category: str = Field(min_length=1, max_length=60)
+    title: str = Field(min_length=1, max_length=100)
+    subtitle: str = Field(min_length=1, max_length=150)
+    description: str = Field(min_length=1, max_length=1000)
+    technology_label: str = Field(min_length=1, max_length=80)
+    addresses_pain_point_ids: list[UUID] = Field(min_length=1, max_length=3)
+    metrics: list[SolutionMetric] = Field(default_factory=list, max_length=10)
+
+
+class SolutionComparisonItem(BaseModel):
+    item_id: UUID
+    text: str = Field(min_length=1, max_length=500)
+    pain_point_ids: list[UUID] = Field(min_length=1, max_length=3)
+
+
+class SolutionToBeItem(SolutionComparisonItem):
+    solution_step_ids: list[UUID] = Field(min_length=1, max_length=4)
+
+
+class SolutionComparisonSide(BaseModel):
+    label: Literal["AS-IS"]
+    metrics: list[SolutionMetric] = Field(default_factory=list, max_length=10)
+    items: tuple[SolutionComparisonItem, SolutionComparisonItem, SolutionComparisonItem]
+
+
+class SolutionToBeSide(BaseModel):
+    label: Literal["TO-BE"]
+    metrics: list[SolutionMetric] = Field(default_factory=list, max_length=10)
+    items: tuple[SolutionToBeItem, SolutionToBeItem, SolutionToBeItem]
+
+
+class SolutionComparison(BaseModel):
+    as_is: SolutionComparisonSide
+    to_be: SolutionToBeSide
+
+
+class SolutionResponse(BaseModel):
+    summary: str = Field(min_length=1, max_length=1500)
+    validation: SolutionValidation
+    pipeline: tuple[
+        SolutionPipelineStep,
+        SolutionPipelineStep,
+        SolutionPipelineStep,
+        SolutionPipelineStep,
+    ]
+    comparison: SolutionComparison
+
 
 class ElaborationResponse(BaseModel):
     """POST /idea-generations/{generation_id}/elaboration 응답 바디"""
@@ -123,6 +217,7 @@ class ElaborationResponse(BaseModel):
     elaboration_id: UUID
     generation_id: UUID
     selected_idea_id: UUID
+    schema_version: Literal["2.0"] = "2.0"
     title: str
     summary: str
     persona: TargetPersona
@@ -132,4 +227,51 @@ class ElaborationResponse(BaseModel):
         PainPointCycleStepResponse,
     ]
     ai_coaching: AICoaching
+    solution: SolutionResponse
     created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_solution_relationships(self) -> "ElaborationResponse":
+        pain_point_ids = {step.pain_point_id for step in self.pain_point_cycle}
+        if len(pain_point_ids) != 3 or [
+            step.order for step in self.pain_point_cycle
+        ] != [1, 2, 3]:
+            raise ValueError("페인포인트 ID는 유일하고 순서는 1, 2, 3이어야 합니다.")
+
+        pipeline = self.solution.pipeline
+        solution_step_ids = {step.solution_step_id for step in pipeline}
+        if len(solution_step_ids) != 4 or [step.order for step in pipeline] != [
+            1,
+            2,
+            3,
+            4,
+        ]:
+            raise ValueError("해결 파이프라인 ID는 유일하고 순서는 1~4여야 합니다.")
+
+        covered_pain_points: set[UUID] = set()
+        for step in pipeline:
+            if not set(step.addresses_pain_point_ids) <= pain_point_ids:
+                raise ValueError("해결 단계가 존재하지 않는 페인포인트를 참조합니다.")
+            covered_pain_points.update(step.addresses_pain_point_ids)
+        if covered_pain_points != pain_point_ids:
+            raise ValueError(
+                "모든 페인포인트는 하나 이상의 해결 단계와 연결되어야 합니다."
+            )
+
+        as_is_items = self.solution.comparison.as_is.items
+        to_be_items = self.solution.comparison.to_be.items
+        if any(not set(item.pain_point_ids) <= pain_point_ids for item in as_is_items):
+            raise ValueError("AS-IS 항목이 존재하지 않는 페인포인트를 참조합니다.")
+        covered_to_be_pain_points: set[UUID] = set()
+        for item in to_be_items:
+            if (
+                not set(item.pain_point_ids) <= pain_point_ids
+                or not set(item.solution_step_ids) <= solution_step_ids
+            ):
+                raise ValueError(
+                    "TO-BE 항목이 존재하지 않는 문제 또는 해결 단계를 참조합니다."
+                )
+            covered_to_be_pain_points.update(item.pain_point_ids)
+        if covered_to_be_pain_points != pain_point_ids:
+            raise ValueError("모든 페인포인트는 TO-BE 개선 결과와 연결되어야 합니다.")
+        return self

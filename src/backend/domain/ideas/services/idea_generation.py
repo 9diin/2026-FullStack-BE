@@ -10,6 +10,7 @@ from backend.domain.ideas.llm.idea_generator import (
     IdeaGenerationTimeout,
     IdeaGenerator,
     IdeaGeneratorConfigurationError,
+    IdeaGeneratorRateLimited,
     IdeaGeneratorUnavailable,
     InvalidIdeaGeneration,
 )
@@ -143,7 +144,15 @@ class IdeaGenerationService:
             raise IdeaAPIError(
                 503,
                 "LLM_CONFIGURATION_ERROR",
-                "Gemini API 키, 모델명 또는 API 설정을 확인해 주세요.",
+                "Gemini API 인증·모델·요청 형식이 올바른지 확인해 주세요. "
+                "상세 오류는 백엔드 로그에서 확인할 수 있습니다.",
+            ) from exc
+        except IdeaGeneratorRateLimited as exc:
+            raise IdeaAPIError(
+                429,
+                "LLM_QUOTA_EXCEEDED",
+                "Gemini API 요청 한도를 초과했습니다. Google AI Studio에서 "
+                "사용량·결제 설정을 확인하거나 한도 초기화 후 다시 시도해 주세요.",
             ) from exc
         except IdeaGeneratorUnavailable as exc:
             raise IdeaAPIError(
